@@ -1,0 +1,424 @@
+﻿using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+
+namespace Assets.Noxel
+{
+    class StructureData : MonoBehaviour
+    {
+        const float scale = .25f;
+        const float limit = 3;
+        const int ListBuffers = 4;
+        //Points are 3d positions stored to generate shapes like lines or polygons
+        List<Vector3> points;
+
+        //Sides are lists of point indexes creating a line between A and B
+        List<int> sideA;
+        List<int> sideB;
+        List<int> sideMaterials;
+        List<int> continuousSideA;
+        List<int> continuousSideB;
+
+        //Polys are lists of sides
+        List<int> walls; //3 or 4 sides
+        List<int> wallMaterials;
+
+
+
+        //required helper variables
+        List<int> similarSides;
+        List<int> potentialLoosePoints;
+
+
+        //INITIALIZATION
+        public StructureData()
+        {
+            points = new List<Vector3>();
+
+            sideA = new List<int>();
+            sideB = new List<int>();
+            sideMaterials = new List<int>();
+
+            walls = new List<int>();
+            wallMaterials = new List<int>();
+
+            potentialLoosePoints = new List<int>();
+        }
+
+        //Makes sure that lists have enough capacity to add items in one frame, and increase capacity (copyto) in an unimportant frame
+        void BufferLists()
+        {
+            if (points.Capacity <= points.Count + ListBuffers)
+            {
+                points.Capacity += points.Capacity / 2;
+            }
+            if (sideA.Capacity <= sideA.Count + ListBuffers)
+            {
+                sideA.Capacity += sideA.Capacity / 2;
+                sideB.Capacity = sideA.Capacity;
+                sideMaterials.Capacity = sideA.Capacity;
+            }
+            if (walls.Capacity <= walls.Count + ListBuffers)
+            {
+                walls.Capacity += walls.Capacity / 2;
+                wallMaterials.Capacity = walls.Capacity;
+                //frameOnFrame.Capacity = frames.Capacity;
+            }
+        }
+
+        int ClearLoosePoints()
+        {
+            int deleted = 0;
+
+            for (int i = 0; i < potentialLoosePoints.Count; i++)
+            {
+                if (SafeRemovePoint(potentialLoosePoints[i]))
+                {
+                    deleted++;
+                }
+            }
+
+            potentialLoosePoints = new List<int>();
+            return deleted;
+        }
+
+        //Makes sure new sides dont overlap
+        int MakeContinuousSides(int iSide)
+        {
+            similarSides = new List<int>();
+            int iSameSide = iSide;
+
+            Vector3 thisDirection = SideDirection(iSide);
+            Vector3 thatDirection;
+
+            //Delete similar Merged sides
+            for (int i = 0; i < continuousSideA.Count; i++)
+            {
+                thatDirection = ContinuousSideDirection(i);
+                if (thisDirection == -thatDirection) thatDirection *= -1;
+                //existing and new side share same direction
+                if (thisDirection == thatDirection)
+                {
+                    thatDirection = PointsDirection(sideA[iSide], continuousSideA[i]);
+                    if (thisDirection == -thatDirection) thatDirection *= -1;
+                    //existing and new side share same ray
+                    if (thisDirection == thatDirection)
+                    {
+                        continuousSideA.RemoveAt(i);
+                        continuousSideB.RemoveAt(i);
+                        if (i == iSide)
+                        {
+                            iSameSide = similarSides.Count - 1;
+                        }
+                    }
+                }
+            }
+            //Make a list of similar sides
+            for (int i = 0; i < sideA.Count; i++)
+            {
+                thatDirection = SideDirection(i);
+                if (thisDirection == -thatDirection) thatDirection *= -1;
+                //existing and new side share same direction
+                if (thisDirection == thatDirection)
+                {
+                    thatDirection = PointsDirection(sideA[iSide], sideA[i]);
+                    if (thisDirection == -thatDirection) thatDirection *= -1;
+                    //existing and new side share same ray
+                    if (thisDirection == thatDirection)
+                    {
+                        similarSides.Add(i);
+                        if (i == iSide)
+                        {
+                            iSameSide = similarSides.Count - 1;
+                        }
+                    }
+                }
+            }
+            return similarSides[iSameSide];
+        }
+        //Outs the longest side possible with 2 sides
+        void LongestSidePossible(int iSideA, int iSideB, out int iNewSideA, out int iNewSideB)
+        {
+            float distance = 0;
+            float record = 0;
+            iNewSideA = -1;
+            iNewSideB = -1;
+
+            //Find the longest distance and choose those two points
+            distance = Vector3.Distance(points[sideA[iSideA]], points[sideA[iSideB]]);
+            if (distance > record)
+            {
+                record = distance;
+                iNewSideA = sideA[iSideA];
+                iNewSideB = sideA[iSideB];
+            }
+            distance = Vector3.Distance(points[sideB[iSideA]], points[sideB[iSideB]]);
+            if (distance > record)
+            {
+                record = distance;
+                iNewSideA = sideA[iSideA];
+                iNewSideB = sideB[iSideB];
+            }
+            distance = Vector3.Distance(points[sideA[iSideB]], points[sideA[iSideB]]);
+            if (distance > record)
+            {
+                record = distance;
+                iNewSideA = sideB[iSideA];
+                iNewSideB = sideB[iSideB];
+            }
+        }
+
+        public int CreatePoint(Vector3 position, int iSide = -1)
+        {
+            //If position is closer than 95% of scale from any other point, it will just return that point instead
+            float scaleMin = scale * .95f;
+            for (int i = 0; i < points.Count; i++)
+            {
+                if (Vector3.Distance(position, points[i]) < scaleMin)
+                {
+                    return i;
+                }
+            }
+            //Actually create the point because it passed the check
+            points.Add(position);
+            //If this point belongs to a side, split it
+            if (iSide != -1)
+            {
+                CreateSide(sideA[iSide], points.Count - 1);
+                sideA[iSide] = points.Count - 1;
+            }
+
+            return points.Count - 1;
+        }
+
+        public bool SafeRemovePoint(int iPoint)
+        {
+            //make sure point is in range
+            if (iPoint >= points.Count || iPoint < 0)
+            {
+                return false;
+            }
+            //Cancel if point is used in sides
+            for (int i = 0; i < sideA.Count; i++)
+            {
+                if (sideA[i] == iPoint)
+                {
+                    return false;
+                }
+                if (sideB[i] > iPoint)
+                {
+                    return false;
+                }
+            }
+
+            //cancel if point is used in walls
+            for (int i = 0; i < walls.Count; i++)
+            {
+                if (walls[i] == iPoint)
+                {
+                    return false;
+                }
+            }
+
+            //force remove the point now that it cleared checks
+            RemovePoint(iPoint);
+            return true;
+        }
+
+        public void RemovePoint(int iPoint)
+        {
+            //make sure point is in range
+            if (iPoint >= points.Count || iPoint < 0)
+            {
+                return;
+            }
+
+            //remove the point and its attributes
+            points.RemoveAt(iPoint);
+
+            //decrement any indices in sides greater than the point
+            //delete any sides including the point
+            for (int i = 0; i < sideA.Count; i++)
+            {
+                if (sideA[i] > iPoint)
+                {
+                    sideA[i]--;
+                }
+                else if (sideA[i] == iPoint)
+                {
+                    RemoveSide(i);
+                }
+
+                if (sideB[i] > iPoint)
+                {
+                    sideB[i]--;
+                }
+                else if (sideB[i] == iPoint)
+                {
+                    RemoveSide(i);
+                }
+            }
+
+            //decrement any indices in walls greater than the point
+            //delete any walls including the point
+            for (int i = 0; i < walls.Count; i++)
+            {
+                if (walls[i] > iPoint)
+                {
+                    walls[i]--;
+                }
+                else if (walls[i] == iPoint)
+                {
+                    RemoveWall(i);
+                }
+            }
+        }
+
+        public int CreateSide(int iPointA, int iPointB)
+        {
+            //Make sure points are in range, unique, and the distance is within limits
+            if (iPointA >= points.Count ||
+                iPointB >= points.Count ||
+                iPointA == iPointB ||
+                iPointA < 0 ||
+                iPointB < 0 ||
+                Vector3.Distance(points[iPointA], points[iPointB]) > limit)
+            {
+                return -1;
+            }
+
+            //Create the side
+            sideA.Add(iPointA);
+            sideB.Add(iPointB);
+
+
+
+            return MergeContinuousSides(sideA.Count - 1);
+        }
+
+        public void RemoveSide(int iSide, int replace = -1)
+        {
+            //Bounds checking
+            if (iSide >= sideA.Count || iSide < 0)
+            {
+                return;
+            }
+            //Decrement anything in similarSides greater than iSide
+            for (int i = 0; i < similarSides.Count; i++)
+            {
+                if (similarSides[i] > iSide)
+                {
+                    similarSides[i]--;
+                }
+                else if (similarSides[i] == iSide)
+                {
+                    similarSides[i] = replace;
+                }
+            }
+
+            //add points to potential loose points
+            potentialLoosePoints.Add(sideA[iSide]);
+            potentialLoosePoints.Add(sideB[iSide]);
+
+            //remove the side
+            sideA.RemoveAt(iSide);
+            sideB.RemoveAt(iSide);
+            sideMaterials.RemoveAt(iSide);
+        }
+
+        public int CreateWall(int[] iPoints)
+        {
+            //Only create rectangles (must have 4 right angles!)
+            //Or triangles
+            return walls.Count - 1;
+        }
+
+        public void RemoveWall(int iWall)
+        {
+
+        }
+
+        public Vector3 ContinuousSideDirection(int iSide)
+        {
+            return PointsDirection(continuousSideA[iSide], continuousSideB[iSide]);
+        }
+
+        public Vector3 SideDirection(int iSide)
+        {
+            return PointsDirection(sideA[iSide], sideB[iSide]);
+        }
+
+        public Vector3 PointsDirection(int iPointA, int iPointB)
+        {
+            return Direction(points[iPointA], points[iPointB]);
+        }
+
+        public Vector3 Direction(Vector3 pointA, Vector3 pointB)
+        {
+            return (pointB - pointA).normalized;
+        }
+    }
+
+    /*
+     * for (int i = 0; i < similarSides.Count; i++)
+                {
+                    for (int j = i; j < similarSides.Count; j++)
+                    {
+                        //if i and j point to the same side, do nothing
+                        if(similarSides[j] == similarSides[i]) {}
+                        //if both on same side
+                        else if(pointOnSide[sideA[similarSides[j]]] == pointOnSide[sideB[similarSides[j]]])
+                        {
+                            RemoveSide(similarSides[j], pointOnSide[sideA[similarSides[j]]]);
+                        }
+                        //if one side connects to another
+                        if (sideA[similarSides[i]] == sideA[similarSides[j]] || 
+                            sideA[similarSides[i]] == sideB[similarSides[j]] || 
+                            sideB[similarSides[i]] == sideA[similarSides[j]] ||
+                            sideB[similarSides[i]] == sideB[similarSides[j]])
+                        {
+                            int a, b;
+                            LongestSidePossible(similarSides[i], similarSides[j], out a, out b);
+                            sideA[similarSides[i]] = a;
+                            sideB[similarSides[i]] = b;
+                            RemoveSide(similarSides[j], similarSides[i]);
+                        }
+                        //if either point is actually on this side, just extend the side!
+                        else if (pointOnSide[sideA[similarSides[j]]] == similarSides[i])
+                        {
+                            //see if you should modify A or B
+                            if (Vector3.Distance(points[sideB[similarSides[i]]], points[sideB[similarSides[j]]]) > Vector3.Distance(points[sideA[similarSides[i]]], points[sideB[similarSides[j]]]))
+                            {
+                                //Closer to A
+                                sideA[similarSides[i]] = sideB[similarSides[j]];
+                                RemoveSide(similarSides[j], similarSides[i]);
+                            }
+                            else
+                            {
+                                //Closer to B
+                                sideB[similarSides[i]] = sideB[similarSides[j]];
+                                RemoveSide(similarSides[j], similarSides[i]);
+                            }
+                        }
+                        else if (pointOnSide[sideB[similarSides[j]]] == i)
+                        {
+                            if (Vector3.Distance(points[sideB[similarSides[i]]], points[sideA[similarSides[j]]]) > Vector3.Distance(points[sideA[similarSides[i]]], points[sideA[similarSides[j]]]))
+                            {
+                                //Closer to A
+                                sideA[similarSides[i]] = sideA[similarSides[j]];
+                                RemoveSide(similarSides[j], similarSides[i]);
+                            }
+                            else
+                            {
+                                //Closer to B
+                                sideB[similarSides[i]] = sideA[similarSides[j]];
+                                RemoveSide(similarSides[j], similarSides[i]);
+                            }
+                        }
+                    }
+                }
+
+        */
+
+}

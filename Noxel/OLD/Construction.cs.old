@@ -1,0 +1,519 @@
+﻿using System.Collections;
+using System.Collections.Generic;
+using System.Diagnostics;
+using UnityEngine;
+using Debug = UnityEngine.Debug;
+
+namespace Assets.Noxel
+{
+    public class Construction
+    {
+        const float scale = .25f;
+        const float minScale = scale * .95f;
+        const float multiple = 1 / scale;
+        const int listBuffers = 6;
+
+        List<Vector3> points;
+
+        List<int> sideA;
+        List<int> sideB;
+
+        List<int> wallA;
+        List<int> wallB;
+        List<int> wallC;
+        List<int> wallD;
+
+        List<bool> sharedPoints;
+
+        List<int> pointsFlaggedForDelete;
+        List<int> sidesFlaggedForDelete;
+        List<int> wallsFlaggedForDelete;
+
+
+        //INITIALIZATION
+        public Construction()
+        {
+            points = new List<Vector3>();
+
+            sideA = new List<int>();
+            sideB = new List<int>();
+
+            wallA = new List<int>();
+            wallB = new List<int>();
+            wallC = new List<int>();
+            wallD = new List<int>();
+
+            sharedPoints = new List<bool>();
+            sharedPoints.Add(false);
+            sharedPoints.Add(false);
+
+            pointsFlaggedForDelete = new List<int>();
+            sidesFlaggedForDelete = new List<int>();
+            wallsFlaggedForDelete = new List<int>();
+        }
+
+        //Pre-Render
+        void TryDeleteFlaggedItems()
+        {
+            for (int i = 0; i < pointsFlaggedForDelete.Count; i++)
+            {
+                CleanDeletePoint(pointsFlaggedForDelete[i]);
+            }
+            /*
+            for (int i = 0; i < sidesFlaggedForDelete.Count; i++)
+            {
+                CleanDeleteSide(sidesFlaggedForDelete[i]);
+            }*/
+            pointsFlaggedForDelete = new List<int>();
+        }
+
+        //Post-Render
+
+        void BufferLists()
+        {
+            if (points.Capacity <= points.Count + listBuffers)
+            {
+                points.Capacity += points.Capacity / 2;
+            }
+            if (sideA.Capacity <= sideA.Count + listBuffers)
+            {
+                sideA.Capacity += sideA.Capacity / 2;
+                sideB.Capacity = sideA.Capacity;
+                //sideMaterials.Capacity = sideA.Capacity;
+            }
+            if (wallA.Capacity <= wallA.Count + listBuffers)
+            {
+                wallA.Capacity += wallA.Capacity / 2;
+                wallB.Capacity = wallA.Capacity;
+                wallC.Capacity = wallA.Capacity;
+                wallD.Capacity = wallA.Capacity;
+                //wallMaterials.Capacity = walls.Capacity;
+                //frameOnFrame.Capacity = frames.Capacity;
+            }
+        }
+
+        //POINTS
+
+        //create a point at position, merge it with nearby positions if possible, if placed on side, split it
+        public int CreatePoint(Vector3 position, int iSide = -1)
+        {
+            //If this point is on a side, make sure it isnt too close to one of its ends
+            if (iSide != -1)
+            {
+                float distance = SideDistanceFromPoint(position, iSide, out position);
+                if(distance == -1)
+                {
+                    return sideA[iSide];
+                }
+                if (distance == -2)
+                {
+                    return sideB[iSide];
+                }
+            }
+            //if the point is closer than .95 of scale to another point, just return the existing point
+            for (int i = 0; i < points.Count; i++)
+            {
+                if (Vector3.Distance(position, points[i]) < minScale)
+                {
+                    return i;
+                }
+            }
+
+            points.Add(position);
+            sharedPoints.Add(false);
+
+            if (iSide != -1)
+            {
+                CreateSide(sideA[iSide], points.Count - 1);
+
+                sideA[iSide] = points.Count - 1;
+
+                sharedPoints[points.Count - 1] = true;
+            }
+            return points.Count - 1;
+        }
+
+        //safely remove point at index iPoint
+        public bool CleanDeletePoint(int iPoint)
+        {
+            if(iPoint >= points.Count || iPoint < 0)
+            {
+                Debug.Log("Cannot delete point: Index out of bounds");
+            }
+
+            int count = 0;
+            int wallCount = 0;
+            List<int> attachedSides = new List<int>();
+
+            //Count and list all sides that are attached to this point
+            for (int i = 0; i < sideA.Count; i++)
+            {
+                if (sideA[i] == iPoint)
+                {
+                    count++;
+                    attachedSides.Add(i);
+                }
+                else if (sideB[i] == iPoint)
+                {
+                    count++;
+                    attachedSides.Add(i);
+                }
+            }
+            //Count all walls that are attached to this point
+            for (int i = 0; i < wallA.Count; i++)
+            {
+                if (wallA[i] == iPoint || wallB[i] == iPoint || wallC[i] == iPoint || wallD[i] == iPoint)
+                {
+                    wallCount++;
+                }
+            }
+            //If this point is used in polys, do not remove
+            if (wallCount > 0) return false;
+            //If this point is not used by ANY sides, remove it
+            if (count == 0)
+            {
+                RemovePoint(iPoint);
+                return true;
+            }
+            //If this point is used by only ONE side, it is no longer shared
+            else if (count == 1) sharedPoints[iPoint] = false;
+            //If this point is used by TWO sides, and they share the same direction, combine and remove the middle
+            else if (count == 2 && SidesShareDirection(attachedSides[0], attachedSides[1]))
+            {
+                //if they share SideA, swap A1 for B2
+                if (sideA[attachedSides[0]] == sideA[attachedSides[1]])
+                    sideA[attachedSides[0]] = sideB[attachedSides[1]];
+                //if they share SideB, swap B1 for A2
+                else if (sideB[attachedSides[0]] == sideB[attachedSides[1]])
+                    sideB[attachedSides[0]] = sideA[attachedSides[1]];
+                //if SideA1 shares sideB1, swap A1 for A2
+                else if (sideA[attachedSides[0]] == sideB[attachedSides[1]])
+                    sideA[attachedSides[0]] = sideA[attachedSides[1]];
+                //if SideB1 shares sideA1, swap B1 for B2
+                else if (sideB[attachedSides[0]] == sideA[attachedSides[1]])
+                    sideB[attachedSides[0]] = sideB[attachedSides[1]];
+
+                //Now that we've combined them into the first side, remove the second and the middle point
+                RemoveSide(attachedSides[1]);
+                RemovePoint(iPoint);
+                return true;
+            }
+            //If there are more than 2, check angles to see if they match
+            else if (count >= 2)
+            {
+                for (int i = 0; i < attachedSides.Count; i++)
+                {
+                    for (int i2 = i + 1; i2 < attachedSides.Count; i2++)
+                    {
+                        //If they match, mark the point as shared and close the loop
+                        if (SidesShareDirection(attachedSides[i], attachedSides[i2]))
+                        {
+                            sharedPoints[iPoint] = true;
+                            i = attachedSides.Count;
+                            i2 = attachedSides.Count;
+                        }
+                        else sharedPoints[iPoint] = false;
+                    }
+                }
+
+            }
+
+            return false;
+        }
+
+        //Forcefully remove point at index iPoint
+        void RemovePoint(int iPoint)
+        {
+            if (iPoint >= points.Count || iPoint < 0)
+            {
+                Debug.Log("Cannot remove point: Index out of bounds");
+            }
+
+            points.RemoveAt(iPoint);
+            sharedPoints.RemoveAt(iPoint);
+
+            //Decrement indexes in sides above iPoint, remove sides containing iPoint
+            for (int i = 0; i < sideA.Count; i++)
+            {
+                if (sideA[i] == iPoint || sideB[i] == iPoint)
+                {
+                    RemoveSide(i);
+                }
+                if (sideA[i] > iPoint)
+                {
+                    sideA[i]--;
+                }
+                if (sideB[i] > iPoint)
+                {
+                    sideB[i]--;
+                }
+            }
+            //Decrement indexes in sides above iPoint, remove walls containing iPoint
+            for (int i = 0; i < wallA.Count; i++)
+            {
+                if (wallA[i] == iPoint || wallB[i] == iPoint || wallC[i] == iPoint || wallD[i] == iPoint)
+                {
+                    RemoveWall(i);
+                }
+                if (wallA[i] > iPoint)
+                {
+                    wallA[i]--;
+                }
+                if (wallB[i] > iPoint)
+                {
+                    wallB[i]--;
+                }
+                if (wallC[i] > iPoint)
+                {
+                    wallC[i]--;
+                }
+                if (wallD[i] > iPoint)
+                {
+                    wallD[i]--;
+                }
+            }
+            //Decrement points flagged for delete above iPoint
+            for (int i = 0; i < pointsFlaggedForDelete.Count; i++)
+            {
+                if (pointsFlaggedForDelete[i] > iPoint)
+                {
+                    pointsFlaggedForDelete[i]--;
+                }
+            }
+        }
+
+        //SIDES
+
+        //Create a side from two point indexes
+        public int CreateSide(int iPointA, int iPointB)
+        {
+            //make sure the new side is larger than the minimum scale
+            if (Vector3.Distance(points[iPointA], points[iPointB]) < minScale) return -1;
+            //Create the side between two points
+            sideA.Add(iPointA);
+            sideB.Add(iPointB);
+            //return new side's index
+            return sideA.Count - 1;
+        }
+
+        //Create a side from a position and a point index
+        public int CreateSide(int iPointA, Vector3 posPointB, int iSideB = -1)
+        {
+            //make sure the new side is larger than the minimum scale
+            if (Vector3.Distance(points[iPointA], posPointB) < minScale) return -1;
+            //Create a new point and flag it for safe deleting in case it ends up useless
+            int newPoint = CreatePoint(posPointB, iSideB);
+            pointsFlaggedForDelete.Add(newPoint);
+            //Using the new point and existing point, create a side
+            return CreateSide(iPointA, newPoint);
+        }
+
+        //Create a side from two Positions
+        public int CreateSide(Vector3 posPointA, Vector3 posPointB, int iSideA = -1, int iSideB = -1)
+        {
+            //make sure the new side is larger than the minimum scale
+            if (Vector3.Distance(posPointA, posPointB) < minScale) return -1;
+            //Create a new point and flag it for safe deleting in case it ends up useless
+            int newPoint = CreatePoint(posPointA, iSideB);
+            pointsFlaggedForDelete.Add(newPoint);
+            //Using the new point and the position, create a side
+            return CreateSide(newPoint, posPointB, iSideB);
+        }
+
+        //Delete side safely without destroying any required data for anything else
+        public void CleanDeleteSide(int iSide)
+        {
+            //bounds checking
+            if (iSide >= sideA.Count || iSide < 0)
+            {
+                return;
+            }
+            //safe removal of points
+            pointsFlaggedForDelete.Add(sideA[iSide]);
+            pointsFlaggedForDelete.Add(sideB[iSide]);
+            //passed all checks, remove the side
+            RemoveSide(iSide);
+        }
+
+        //Remove the side and everything referencing it - UNSAFE
+        void RemoveSide(int iSide)
+        {
+            //bounds checking
+            if (iSide >= sideA.Count || iSide < 0)
+            {
+                return;
+            }
+            //remove the data
+            sideA.RemoveAt(iSide);
+            sideB.RemoveAt(iSide);
+        }
+
+        //WALLS
+        //Create wall from 4 positions
+        public int CreateWall(int pointA, int pointB, int pointC, int pointD)
+        {
+            wallA.Add(pointA);
+            wallB.Add(pointB);
+            wallC.Add(pointC);
+            wallD.Add(pointD);
+            //if it is a triangle, set wallD to -1
+            HandleTriangle(wallA.Count - 1);
+
+            return wallA.Count - 1;
+        }
+        //Create a wall from two sides
+        public int CreateWall(int iFirstSide, int iSecondSide)
+        {
+            //bounds checking
+            if (iFirstSide >= sideA.Count || iFirstSide < 0 || iSecondSide >= sideA.Count || iSecondSide < 0)
+            {
+                return -1;
+            }
+            //if sides do not belong to a single plane, dont make a wall
+            if (!SidesSharePlane(iFirstSide, iSecondSide))
+            {
+                return -1;
+            }
+            //Passed checks, create the wall from four positions
+            return CreateWall(sideA[iFirstSide], sideB[iFirstSide], sideA[iSecondSide], sideB[iSecondSide]);
+        }
+
+        public void CleanRemoveWall(int iWall)
+        {
+            if(iWall >= wallA.Count || iWall < 0)
+            {
+                return;
+            }
+            //Currently no data depends on wall, no checks needed.
+            RemoveWall(iWall);
+        }
+
+        void RemoveWall(int iWall)
+        {
+            if (iWall >= wallA.Count || iWall < 0)
+            {
+                return;
+            }
+            wallA.RemoveAt(iWall);
+            wallB.RemoveAt(iWall);
+            wallC.RemoveAt(iWall);
+            wallD.RemoveAt(iWall);
+        }
+
+        //INFORMATION
+        bool HandleTriangle(int iWall)
+        {
+            if (wallA[iWall] == wallD[iWall] || wallB[iWall] == wallD[iWall])
+            {
+                wallD[iWall] = -1;
+                return true;
+            }
+            else if(wallA[iWall] == wallC[iWall] || wallB[iWall] == wallC[iWall])
+            {
+                wallC[iWall] = wallD[iWall];
+                wallD[iWall] = -1;
+                return true;
+            }
+            return false;
+        }
+
+        //returns true if a point belongs to a wall
+        bool PointOnWall(int iPoint, int iWall)
+        {
+            if (sideA[wallA[iWall]] == iPoint ||
+                sideB[wallA[iWall]] == iPoint ||
+                sideA[wallB[iWall]] == iPoint ||
+                sideB[wallB[iWall]] == iPoint)
+            {
+                return true;
+            }
+            else return false;
+        }
+
+        //Returns rounded distance
+        float SideDistanceFromPoint(Vector3 findPoint, int iSide, out Vector3 pointOnLine)
+        {
+            Vector3 pointA = points[sideA[iSide]];
+            Vector3 pointB = points[sideA[iSide]];
+            Ray line;
+            float rayDistance;
+            float sideADistance = Vector3.Distance(findPoint, pointA);
+            float sideBDistance = Vector3.Distance(findPoint, pointB);
+            //Closer to A
+            if (sideADistance < sideBDistance)
+            {
+                line = new Ray(pointA, (pointB - pointA).normalized);
+                rayDistance = Vector3.Project(findPoint - line.origin, line.direction).magnitude;
+                pointOnLine = line.GetPoint(RoundScale(rayDistance));
+
+                if (rayDistance < .15 || Vector3.Angle(findPoint - line.origin, line.direction) > 90)
+                {
+                    pointOnLine = pointA;
+                    return -1f;
+                }
+            }
+            //Closer to B
+            else
+            {
+                line = new Ray(pointB, (pointA - pointB).normalized);
+                rayDistance = Vector3.Project(findPoint - line.origin, line.direction).magnitude;
+                pointOnLine = line.GetPoint(RoundScale(rayDistance));
+
+                if (rayDistance < .15 || Vector3.Angle(findPoint - line.origin, line.direction) > 90)
+                {
+                    pointOnLine = pointB;
+                    return -2f;
+                }
+            }
+            return rayDistance;
+        }
+
+        //Returns true if sides share the same direction
+        bool SidesShareDirection(int iFirstSide, int iNextSide)
+        {
+            if (SideDirection(iFirstSide) == SideDirection(iNextSide) || SideDirection(iFirstSide) == -SideDirection(iNextSide))
+                return true;
+            else
+                return false;
+        }
+
+        //Returns direction from sideA to sideB at iSide
+        Vector3 SideDirection(int iSide)
+        {
+            return Direction(points[sideB[iSide]], points[sideA[iSide]]);
+        }
+
+        //Returns a direction from a point to another
+        Vector3 Direction(Vector3 from, Vector3 to)
+        {
+            return (to - from).normalized;
+        }
+
+        //Determines if 2 sides share a single plane
+        bool SidesSharePlane(int iFirstSide, int iNextSide)
+        {
+            return SharePlane(points[sideA[iFirstSide]], points[sideB[iFirstSide]], points[sideA[iNextSide]], points[sideB[iNextSide]]);
+        }
+
+        //determines if 4 points share a single plane
+        bool SharePlane(Vector3 a, Vector3 b, Vector3 c, Vector3 d)
+        {
+            if (GetNormal(a, b, c) == GetNormal(a, b, d) || GetNormal(a, b, c) == -GetNormal(a, b, d)) return true;
+            return false;
+        }
+
+        //returns the normal vector of 3 points
+        Vector3 GetNormal(Vector3 a, Vector3 b, Vector3 c)
+        {
+            Vector3 side1 = b - a;
+            Vector3 side2 = c - a;
+            return Vector3.Cross(side1, side2).normalized;
+        }
+
+        float RoundScale(float number)
+        {
+            return Mathf.Round(number * multiple) / multiple;
+        }
+    }
+}
+
