@@ -10,4 +10,6 @@ The implementation here is poor, but the idea was to prove navigability and inte
 
 ### Video:
 
+[Link](https://www.youtube.com/watch?v=ibWDBYoF0do)
+
 [![Alt text](https://img.youtube.com/vi/ibWDBYoF0do/0.jpg)](https://www.youtube.com/watch?v=ibWDBYoF0do)
